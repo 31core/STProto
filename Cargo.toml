@@ -1,0 +1,13 @@
+[package]
+name = "stproto"
+version = "0.1.0"
+edition = "2021"
+authers = ["31core"]
+
+[dependencies]
+rust-crypto = "0.2.36"
+rand = "0.8.5"
+rsa = "0.8.1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
