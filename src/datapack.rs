@@ -22,11 +22,10 @@ impl DataPack {
             encoding: 0,
             sha256: [0; 32],
             size: 0,
-            data: vec![],
+            data: Vec::new(),
         }
     }
     pub fn build(&mut self) -> Vec<u8> {
-        self.get_timestamp();
         self.digest();
         self.size = self.data.len() as u32;
 

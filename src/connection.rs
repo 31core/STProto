@@ -1,15 +1,24 @@
 use super::datapack::*;
 use super::handshaking::ClientHello;
-use rand::Rng;
+use super::totp;
+use crypto::aes::*;
+use crypto::blockmodes::*;
+use crypto::buffer::*;
+use rand::{Rng, RngCore};
 use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
 use rsa::*;
 use std::io::*;
 use std::{io::Write, net::*};
+
+const RSA_BITS: usize = 2048;
+const IV_SIZE: usize = 16;
+
 pub struct Connection {
     pub host: String,
     pub port: u16,
+    pub iv: [u8; IV_SIZE],
     pub key: Vec<u8>,
-    pub time_stamp: u64,
+    pub time_stamp: u64, //the time stamp of connection setting up
     pub datapack: DataPack,
     pub stream: TcpStream,
     pub listener: Option<TcpListener>, //only for server
@@ -31,28 +40,20 @@ impl Connection {
         /* receive RSA public key from server */
         /* receive RSA pubkey size */
         let size = {
-            let mut size = [0; 8];
+            let mut size = [0; 2];
             stream.read(&mut size[..])?;
-            usize::from_be_bytes(size)
+            u16::from_be_bytes(size)
         };
         /* receive RSA pubkey */
-        let mut buf = {
-            let mut buf = Vec::new();
-            for _ in 0..size {
-                buf.push(0);
-            }
-            buf
-        };
+        let mut buf = vec![0; size as usize];
         stream.read(&mut buf[..])?;
         let pub_key = RsaPublicKey::from_public_key_der(&buf).unwrap();
         /* generate a key */
         let key = {
             let mut rng = rand::thread_rng();
-            let mut key = Vec::new();
-            let key_len: u16 = rng.gen_range(128..256);
-            for _ in 0..key_len {
-                key.push(rng.gen::<u8>());
-            }
+            let key_len = rng.gen_range(128..=(RSA_BITS / 8 - 11));
+            let mut key = vec![0; key_len];
+            rng.fill_bytes(&mut key);
             key
         };
         let encrypted_key = {
@@ -61,19 +62,36 @@ impl Connection {
         };
 
         /* send key size */
-        stream.write(&encrypted_key.len().to_be_bytes())?;
+        stream.write(&(encrypted_key.len() as u16).to_be_bytes())?;
         /* send key */
         stream.write(&encrypted_key)?;
+
+        /* generate and send iv to server */
+        /* generate iv */
+        let iv = {
+            let mut rng = rand::thread_rng();
+            let mut iv = [0; IV_SIZE];
+            rng.fill_bytes(&mut iv);
+            iv
+        };
+        let encrypted_iv = {
+            let mut rng = rand::thread_rng();
+            pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
+        };
+        stream.write(&(encrypted_iv.len() as u16).to_be_bytes())?;
+        stream.write(&encrypted_iv)?;
 
         let conn = Connection {
             host: host.to_string(),
             port,
+            iv,
             key,
             time_stamp: 0,
             datapack: DataPack::new(),
             stream,
             listener: None,
         };
+
         Ok(conn)
     }
     pub fn listen(host: &str, port: u16) -> Result<Self> {
@@ -91,44 +109,67 @@ impl Connection {
         }
 
         let mut rng = rand::thread_rng();
-        let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let priv_key = RsaPrivateKey::new(&mut rng, RSA_BITS).unwrap();
         let pub_key = priv_key.to_public_key();
         let binding = pub_key.to_public_key_der().unwrap();
         let pub_key_der = binding.as_bytes();
         /* send RSA public key */
-        stream.write(&pub_key_der.len().to_be_bytes())?; //send RSA pubkey size
+        stream.write(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
         stream.write(pub_key_der)?; //send RSA pubkey
 
+        /* receive key from client */
         /* receive key size */
         let size = {
-            let mut size = [0; 8];
+            let mut size = [0; 2];
             stream.read(&mut size)?;
-            usize::from_be_bytes(size)
+            u16::from_be_bytes(size)
         };
         /* receive key */
         let key = {
-            let mut buf = Vec::new();
-            for _ in 0..size {
-                buf.push(0);
-            }
+            let mut buf = vec![0; size as usize];
             stream.read(&mut buf)?;
             priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap()
+        };
+
+        /* receive key from client */
+        /* receive key size */
+        let size = {
+            let mut size = [0; 2];
+            stream.read(&mut size)?;
+            u16::from_be_bytes(size)
+        };
+        /* receive key */
+        let iv = {
+            let mut buf = vec![0; size as usize];
+            stream.read(&mut buf)?;
+            let data = priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap();
+            let mut iv = [0; IV_SIZE];
+            for i in 0..IV_SIZE {
+                iv[i] = data[i];
+            }
+            iv
         };
 
         let conn = Connection {
             host: host.to_string(),
             port,
             key,
+            iv,
             time_stamp: 0,
             datapack: DataPack::new(),
             stream,
             listener: Some(listener),
         };
+
         Ok(conn)
     }
     pub fn send(&mut self) -> Result<()> {
+        self.datapack.get_timestamp();
+        let key = totp::gen_key(&self.key, self.datapack.time_stamp);
+        self.datapack.data = aes256_cbc_encrypt(&self.datapack.data, &key, &self.iv);
         let data = self.datapack.build();
-        self.stream.write(&data[..])?;
+        self.stream.write(&data)?;
+
         Ok(())
     }
     pub fn receive(&mut self) -> Result<()> {
@@ -137,15 +178,20 @@ impl Connection {
         self.stream.read(&mut header)?;
         self.datapack.parse(&header);
 
-        let mut data = {
-            let mut data = Vec::new();
-            for _ in 0..self.datapack.size as usize {
-                data.push(0);
+        let mut size = self.datapack.size as usize;
+        let mut data = Vec::new();
+        loop {
+            let mut tmp = vec![0; self.datapack.size as usize];
+            let recv_size = self.stream.read(&mut tmp)?;
+            data.extend(tmp[0..recv_size].iter());
+            size -= recv_size;
+            if size == 0 {
+                break;
             }
-            data
-        };
-        self.stream.read(&mut data)?;
-        self.datapack.data = data.to_vec();
+        }
+
+        let key = totp::gen_key(&self.key, self.datapack.time_stamp);
+        self.datapack.data = aes256_cbc_decrypt(&data, &key, &self.iv);
         Ok(())
     }
     /// write data to be sent
@@ -156,4 +202,62 @@ impl Connection {
     pub fn read(&self) -> &Vec<u8> {
         &self.datapack.data
     }
+}
+
+fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut encryptor = cbc_encryptor(KeySize::KeySize256, key, iv, PkcsPadding);
+
+    let mut encrypted_data = Vec::<u8>::new();
+    let mut read_buffer = RefReadBuffer::new(data);
+    let mut buffer = [0; 4096];
+    let mut write_buffer = RefWriteBuffer::new(&mut buffer);
+
+    loop {
+        let result = encryptor
+            .encrypt(&mut read_buffer, &mut write_buffer, true)
+            .unwrap();
+
+        encrypted_data.extend(
+            write_buffer
+                .take_read_buffer()
+                .take_remaining()
+                .iter()
+                .map(|&i| i),
+        );
+
+        match result {
+            BufferResult::BufferUnderflow => break,
+            BufferResult::BufferOverflow => continue,
+        }
+    }
+
+    encrypted_data
+}
+
+fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut decryptor = cbc_decryptor(KeySize::KeySize256, key, iv, PkcsPadding);
+
+    let mut decrypted_data = Vec::<u8>::new();
+    let mut read_buffer = RefReadBuffer::new(data);
+    let mut buffer = [0; 4096];
+    let mut write_buffer = RefWriteBuffer::new(&mut buffer);
+
+    loop {
+        let result = decryptor
+            .decrypt(&mut read_buffer, &mut write_buffer, true)
+            .unwrap();
+        decrypted_data.extend(
+            write_buffer
+                .take_read_buffer()
+                .take_remaining()
+                .iter()
+                .map(|&i| i),
+        );
+        match result {
+            BufferResult::BufferUnderflow => break,
+            BufferResult::BufferOverflow => continue,
+        }
+    }
+
+    decrypted_data
 }
