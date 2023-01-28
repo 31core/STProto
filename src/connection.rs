@@ -222,7 +222,6 @@ fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
                 .take_read_buffer()
                 .take_remaining()
                 .iter()
-                .map(|&i| i),
         );
 
         match result {
@@ -251,7 +250,6 @@ fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
                 .take_read_buffer()
                 .take_remaining()
                 .iter()
-                .map(|&i| i),
         );
         match result {
             BufferResult::BufferUnderflow => break,
