@@ -14,6 +14,7 @@ pub struct DataPack {
     data: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl DataPack {
     pub fn new() -> DataPack {
         DataPack {
@@ -54,7 +55,7 @@ impl DataPack {
         let mut hasher = Sha256::new();
         hasher.input(&data);
         let mut sha256sum = [0; 32];
-        hasher.result(&mut sha256sum[..]);
+        hasher.result(&mut sha256sum);
 
         if sha256sum != self.sha256 {
             return false;
@@ -76,7 +77,7 @@ impl DataPack {
         self.data = data.to_vec();
     }
     pub fn get_data(&self) -> &[u8] {
-        &self.data[..]
+        &self.data
     }
     pub fn len(&self) -> usize {
         self.size as usize
@@ -85,6 +86,6 @@ impl DataPack {
         let mut hasher = Sha256::new();
         hasher.input(&self.data);
 
-        hasher.result(&mut self.sha256[..]);
+        hasher.result(&mut self.sha256);
     }
 }

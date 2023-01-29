@@ -7,25 +7,34 @@ use crypto::buffer::*;
 use rand::{Rng, RngCore};
 use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
 use rsa::*;
+use std::io::Result as IOResult;
 use std::io::*;
 use std::{io::Write, net::*};
 
 const RSA_BITS: usize = 2048;
 const IV_SIZE: usize = 16;
 
-pub struct Connection {
-    pub host: String,
-    pub port: u16,
-    pub iv: [u8; IV_SIZE],
-    pub key: Vec<u8>,
-    pub time_stamp: u64, //the time stamp of connection setting up
-    pub datapack: DataPack,
-    pub stream: TcpStream,
-    pub listener: Option<TcpListener>, //only for server
+#[allow(dead_code)]
+pub struct STClient {
+    host: String,
+    port: u16,
+    iv: [u8; IV_SIZE],
+    key: Vec<u8>,
+    time_stamp: u64, //the time stamp of connection setting up
+    datapack: DataPack,
+    stream: TcpStream,
 }
 
-impl Connection {
-    pub fn connect(host: &str, port: u16) -> Result<Self> {
+#[allow(dead_code)]
+pub struct STServer {
+    host: String,
+    port: u16,
+    listener: TcpListener,
+    clients: Vec<STClient>,
+}
+
+impl STClient {
+    pub fn connect(host: &str, port: u16) -> IOResult<Self> {
         let mut stream;
 
         match TcpStream::connect(format!("{}:{}", host, port)) {
@@ -81,7 +90,7 @@ impl Connection {
         stream.write(&(encrypted_iv.len() as u16).to_be_bytes())?;
         stream.write(&encrypted_iv)?;
 
-        let conn = Connection {
+        let conn = STClient {
             host: host.to_string(),
             port,
             iv,
@@ -92,16 +101,95 @@ impl Connection {
                 .as_secs(),
             datapack: DataPack::new(),
             stream,
-            listener: None,
         };
 
         Ok(conn)
     }
-    pub fn listen(host: &str, port: u16) -> Result<Self> {
-        let listener = TcpListener::bind(format!("{}:{}", host, port))?;
+    pub fn send(&mut self) -> IOResult<()> {
+        self.datapack.update_timestamp();
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        self.datapack.set_data(&aes256_cbc_encrypt(
+            &self.datapack.get_data(),
+            &key,
+            &self.iv,
+        ));
+        let data = self.datapack.build();
+        self.stream.write(&data)?;
 
-        let mut stream = listener.accept().unwrap().0;
+        Ok(())
+    }
+    pub fn receive(&mut self) -> IOResult<()> {
+        /* Receive header */
+        let mut header = [0; HEADER_SIZE];
+        self.stream.read(&mut header)?;
+        self.datapack.parse(&header);
 
+        let mut size = self.datapack.len() as usize;
+        let mut data = Vec::new();
+        loop {
+            let mut tmp = vec![0; self.datapack.len() as usize];
+            let recv_size = self.stream.read(&mut tmp)?;
+            data.extend(&tmp[0..recv_size]);
+            size -= recv_size;
+            if size == 0 {
+                break;
+            }
+        }
+
+        /* check sha256sum */
+        if !self.datapack.verify(&data) {
+            return Err(Error::from(ErrorKind::Other));
+        }
+
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        self.datapack
+            .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
+        Ok(())
+    }
+    /// write data to be sent
+    pub fn write(&mut self, data: &[u8]) {
+        self.datapack.set_data(data);
+    }
+    /// read received data
+    pub fn read(&self) -> &[u8] {
+        self.datapack.get_data()
+    }
+    /// close a connection
+    pub fn close(&self) -> IOResult<()> {
+        self.stream.shutdown(std::net::Shutdown::Both)?;
+        Ok(())
+    }
+}
+
+impl STServer {
+    pub fn bind(host: &str, port: u16) -> IOResult<Self> {
+        let conn = STServer {
+            host: host.to_string(),
+            port,
+            listener: TcpListener::bind(format!("{}:{}", host, port))?,
+            clients: Vec::new(),
+        };
+
+        Ok(conn)
+    }
+    pub fn listen(&mut self) -> Result<()> {
+        let host;
+        let port;
+        let mut stream;
+        {
+            let ret = self.listener.accept()?;
+            stream = ret.0;
+            match ret.1 {
+                std::net::SocketAddr::V4(addr) => {
+                    host = addr.ip().to_string();
+                    port = addr.port();
+                }
+                std::net::SocketAddr::V6(addr) => {
+                    host = addr.ip().to_string();
+                    port = addr.port();
+                }
+            }
+        }
         /* check client version */
         {
             let mut client_hello = ClientHello::new();
@@ -153,8 +241,8 @@ impl Connection {
             iv
         };
 
-        let conn = Connection {
-            host: host.to_string(),
+        let client = STClient {
+            host: host,
             port,
             key,
             iv,
@@ -164,59 +252,15 @@ impl Connection {
                 .as_secs(),
             datapack: DataPack::new(),
             stream,
-            listener: Some(listener),
         };
 
-        Ok(conn)
-    }
-    pub fn send(&mut self) -> Result<()> {
-        self.datapack.update_timestamp();
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
-        self.datapack.set_data(&aes256_cbc_encrypt(
-            &self.datapack.get_data(),
-            &key,
-            &self.iv,
-        ));
-        let data = self.datapack.build();
-        self.stream.write(&data)?;
+        self.clients.push(client);
 
         Ok(())
     }
-    pub fn receive(&mut self) -> Result<()> {
-        /* Receive header */
-        let mut header = [0; HEADER_SIZE];
-        self.stream.read(&mut header)?;
-        self.datapack.parse(&header);
-
-        let mut size = self.datapack.len() as usize;
-        let mut data = Vec::new();
-        loop {
-            let mut tmp = vec![0; self.datapack.len() as usize];
-            let recv_size = self.stream.read(&mut tmp)?;
-            data.extend(&tmp[0..recv_size]);
-            size -= recv_size;
-            if size == 0 {
-                break;
-            }
-        }
-
-        /* check sha256sum */
-        if !self.datapack.verify(&data) {
-            return Err(Error::from(ErrorKind::Other));
-        }
-
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
-        self.datapack
-            .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
-        Ok(())
-    }
-    /// write data to be sent
-    pub fn write(&mut self, data: &[u8]) {
-        self.datapack.set_data(data);
-    }
-    /// read received data
-    pub fn read(&self) -> &[u8] {
-        self.datapack.get_data()
+    pub fn accept(&mut self) -> &mut STClient {
+        let len = self.clients.len();
+        &mut self.clients[len - 1]
     }
 }
 

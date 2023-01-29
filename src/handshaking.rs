@@ -20,12 +20,12 @@ impl ClientHello {
         data.push(self.proto_version);
         data.push(self.client_version_major);
         data.push(self.client_version_minor);
-        stream.write(&data[..])?;
+        stream.write(&data)?;
         Ok(())
     }
     pub fn receive(&mut self, stream: &mut TcpStream) -> std::io::Result<()> {
         let mut data = [0; 3];
-        stream.read(&mut data[..])?;
+        stream.read(&mut data)?;
         self.proto_version = data[0];
         self.client_version_major = data[1];
         self.client_version_minor = data[2];
