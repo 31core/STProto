@@ -86,7 +86,10 @@ impl Connection {
             port,
             iv,
             key,
-            time_stamp: 0,
+            time_stamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             datapack: DataPack::new(),
             stream,
             listener: None,
@@ -155,7 +158,10 @@ impl Connection {
             port,
             key,
             iv,
-            time_stamp: 0,
+            time_stamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             datapack: DataPack::new(),
             stream,
             listener: Some(listener),
@@ -164,9 +170,13 @@ impl Connection {
         Ok(conn)
     }
     pub fn send(&mut self) -> Result<()> {
-        self.datapack.get_timestamp();
-        let key = totp::gen_key(&self.key, self.datapack.time_stamp);
-        self.datapack.data = aes256_cbc_encrypt(&self.datapack.data, &key, &self.iv);
+        self.datapack.update_timestamp();
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        self.datapack.set_data(&aes256_cbc_encrypt(
+            &self.datapack.get_data(),
+            &key,
+            &self.iv,
+        ));
         let data = self.datapack.build();
         self.stream.write(&data)?;
 
@@ -178,29 +188,35 @@ impl Connection {
         self.stream.read(&mut header)?;
         self.datapack.parse(&header);
 
-        let mut size = self.datapack.size as usize;
+        let mut size = self.datapack.len() as usize;
         let mut data = Vec::new();
         loop {
-            let mut tmp = vec![0; self.datapack.size as usize];
+            let mut tmp = vec![0; self.datapack.len() as usize];
             let recv_size = self.stream.read(&mut tmp)?;
-            data.extend(tmp[0..recv_size].iter());
+            data.extend(&tmp[0..recv_size]);
             size -= recv_size;
             if size == 0 {
                 break;
             }
         }
 
-        let key = totp::gen_key(&self.key, self.datapack.time_stamp);
-        self.datapack.data = aes256_cbc_decrypt(&data, &key, &self.iv);
+        /* check sha256sum */
+        if !self.datapack.verify(&data) {
+            return Err(Error::from(ErrorKind::Other));
+        }
+
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        self.datapack
+            .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
         Ok(())
     }
     /// write data to be sent
     pub fn write(&mut self, data: &[u8]) {
-        self.datapack.data = data.to_vec();
+        self.datapack.set_data(data);
     }
     /// read received data
-    pub fn read(&self) -> &Vec<u8> {
-        &self.datapack.data
+    pub fn read(&self) -> &[u8] {
+        self.datapack.get_data()
     }
 }
 
@@ -217,12 +233,7 @@ fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
             .encrypt(&mut read_buffer, &mut write_buffer, true)
             .unwrap();
 
-        encrypted_data.extend(
-            write_buffer
-                .take_read_buffer()
-                .take_remaining()
-                .iter()
-        );
+        encrypted_data.extend(write_buffer.take_read_buffer().take_remaining());
 
         match result {
             BufferResult::BufferUnderflow => break,
@@ -245,12 +256,7 @@ fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
         let result = decryptor
             .decrypt(&mut read_buffer, &mut write_buffer, true)
             .unwrap();
-        decrypted_data.extend(
-            write_buffer
-                .take_read_buffer()
-                .take_remaining()
-                .iter()
-        );
+        decrypted_data.extend(write_buffer.take_read_buffer().take_remaining());
         match result {
             BufferResult::BufferUnderflow => break,
             BufferResult::BufferOverflow => continue,

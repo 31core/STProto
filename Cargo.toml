@@ -2,7 +2,8 @@
 name = "stproto"
 version = "0.1.0"
 edition = "2021"
-authers = ["31core"]
+license = "MIT"
+authors = ["31core"]
 
 [dependencies]
 rust-crypto = "0.2.36"
