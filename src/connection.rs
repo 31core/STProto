@@ -11,8 +11,20 @@ use std::io::Result as IOResult;
 use std::io::*;
 use std::{io::Write, net::*};
 
-const RSA_BITS: usize = 2048;
+const RSA_BITS: usize = 3072;
 const IV_SIZE: usize = 16;
+
+impl Drop for STClient {
+    fn drop(&mut self) {
+        /* erase keys from memory */
+        for i in &mut self.key {
+            *i = 0;
+        }
+        for i in &mut self.iv {
+            *i = 0;
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct STClient {
@@ -155,7 +167,7 @@ impl STClient {
         self.datapack.get_data()
     }
     /// close a connection
-    pub fn close(&self) -> IOResult<()> {
+    pub fn close(self) -> IOResult<()> {
         self.stream.shutdown(std::net::Shutdown::Both)?;
         Ok(())
     }
