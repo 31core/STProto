@@ -11,8 +11,6 @@ pub fn gen_key(raw_key: &[u8], time_stamp: u64) -> [u8; 32] {
     let mut sha256sum = [0; 32];
     hasher.input(&mix_key);
     hasher.result(&mut sha256sum);
-    for i in 0..32 {
-        key[i] = sha256sum[i];
-    }
+    key.copy_from_slice(&sha256sum);
     key
 }

@@ -16,16 +16,17 @@ impl ClientHello {
         }
     }
     pub fn send(&self, stream: &mut TcpStream) -> std::io::Result<()> {
-        let mut data = Vec::new();
-        data.push(self.proto_version);
-        data.push(self.client_version_major);
-        data.push(self.client_version_minor);
-        stream.write(&data)?;
+        let data = vec![
+            self.proto_version,
+            self.client_version_major,
+            self.client_version_minor,
+        ];
+        stream.write_all(&data)?;
         Ok(())
     }
     pub fn receive(&mut self, stream: &mut TcpStream) -> std::io::Result<()> {
         let mut data = [0; 3];
-        stream.read(&mut data)?;
+        stream.read_exact(&mut data)?;
         self.proto_version = data[0];
         self.client_version_major = data[1];
         self.client_version_minor = data[2];

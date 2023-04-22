@@ -62,12 +62,12 @@ impl STClient {
         /* receive RSA pubkey size */
         let size = {
             let mut size = [0; 2];
-            stream.read(&mut size[..])?;
+            stream.read_exact(&mut size[..])?;
             u16::from_be_bytes(size)
         };
         /* receive RSA pubkey */
         let mut buf = vec![0; size as usize];
-        stream.read(&mut buf[..])?;
+        stream.read_exact(&mut buf[..])?;
         let pub_key = RsaPublicKey::from_public_key_der(&buf).unwrap();
         /* generate a key */
         let key = {
@@ -83,9 +83,9 @@ impl STClient {
         };
 
         /* send key size */
-        stream.write(&(encrypted_key.len() as u16).to_be_bytes())?;
+        stream.write_all(&(encrypted_key.len() as u16).to_be_bytes())?;
         /* send key */
-        stream.write(&encrypted_key)?;
+        stream.write_all(&encrypted_key)?;
 
         /* generate and send iv to server */
         /* generate iv */
@@ -99,8 +99,8 @@ impl STClient {
             let mut rng = rand::thread_rng();
             pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
         };
-        stream.write(&(encrypted_iv.len() as u16).to_be_bytes())?;
-        stream.write(&encrypted_iv)?;
+        stream.write_all(&(encrypted_iv.len() as u16).to_be_bytes())?;
+        stream.write_all(&encrypted_iv)?;
 
         let conn = STClient {
             host: host.to_string(),
@@ -121,25 +121,25 @@ impl STClient {
         self.datapack.update_timestamp();
         let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
         self.datapack.set_data(&aes256_cbc_encrypt(
-            &self.datapack.get_data(),
+            self.datapack.get_data(),
             &key,
             &self.iv,
         ));
         let data = self.datapack.build();
-        self.stream.write(&data)?;
+        self.stream.write_all(&data)?;
 
         Ok(())
     }
     pub fn receive(&mut self) -> IOResult<()> {
         /* Receive header */
         let mut header = [0; HEADER_SIZE];
-        self.stream.read(&mut header)?;
+        self.stream.read_exact(&mut header)?;
         self.datapack.parse(&header);
 
-        let mut size = self.datapack.len() as usize;
+        let mut size = self.datapack.len();
         let mut data = Vec::new();
         loop {
-            let mut tmp = vec![0; self.datapack.len() as usize];
+            let mut tmp = vec![0; self.datapack.len()];
             let recv_size = self.stream.read(&mut tmp)?;
             data.extend(&tmp[0..recv_size]);
             size -= recv_size;
@@ -217,20 +217,20 @@ impl STServer {
         let binding = pub_key.to_public_key_der().unwrap();
         let pub_key_der = binding.as_bytes();
         /* send RSA public key */
-        stream.write(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
-        stream.write(pub_key_der)?; //send RSA pubkey
+        stream.write_all(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
+        stream.write_all(pub_key_der)?; //send RSA pubkey
 
         /* receive key from client */
         /* receive key size */
         let size = {
             let mut size = [0; 2];
-            stream.read(&mut size)?;
+            stream.read_exact(&mut size)?;
             u16::from_be_bytes(size)
         };
         /* receive key */
         let key = {
             let mut buf = vec![0; size as usize];
-            stream.read(&mut buf)?;
+            stream.read_exact(&mut buf)?;
             priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap()
         };
 
@@ -238,23 +238,21 @@ impl STServer {
         /* receive key size */
         let size = {
             let mut size = [0; 2];
-            stream.read(&mut size)?;
+            stream.read_exact(&mut size)?;
             u16::from_be_bytes(size)
         };
         /* receive key */
         let iv = {
             let mut buf = vec![0; size as usize];
-            stream.read(&mut buf)?;
+            stream.read_exact(&mut buf)?;
             let data = priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap();
             let mut iv = [0; IV_SIZE];
-            for i in 0..IV_SIZE {
-                iv[i] = data[i];
-            }
+            iv.copy_from_slice(&data[..IV_SIZE]);
             iv
         };
 
         let client = STClient {
-            host: host,
+            host,
             port,
             key,
             iv,

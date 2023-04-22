@@ -4,7 +4,7 @@ use std::time::*;
 
 pub const HEADER_SIZE: usize = 46;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DataPack {
     method: u8,
     time_stamp: u64,
@@ -17,14 +17,7 @@ pub struct DataPack {
 #[allow(dead_code)]
 impl DataPack {
     pub fn new() -> DataPack {
-        DataPack {
-            method: 0,
-            time_stamp: 0,
-            encoding: 0,
-            sha256: [0; 32],
-            size: 0,
-            data: Vec::new(),
-        }
+        DataPack::default()
     }
     pub fn build(&mut self) -> Vec<u8> {
         self.digest();
@@ -53,7 +46,7 @@ impl DataPack {
     /// checksum for SHA256
     pub fn verify(&self, data: &[u8]) -> bool {
         let mut hasher = Sha256::new();
-        hasher.input(&data);
+        hasher.input(data);
         let mut sha256sum = [0; 32];
         hasher.result(&mut sha256sum);
 
