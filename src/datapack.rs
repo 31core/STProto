@@ -11,7 +11,7 @@ pub struct DataPack {
     encoding: u8,
     sha256: [u8; 32],
     size: u32,
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -43,7 +43,7 @@ impl DataPack {
             self.data.push(*byte);
         }
     }
-    /// checksum for SHA256
+    /** checksum for SHA256 */
     pub fn verify(&self, data: &[u8]) -> bool {
         let mut hasher = Sha256::new();
         hasher.input(data);
@@ -74,6 +74,9 @@ impl DataPack {
     }
     pub fn len(&self) -> usize {
         self.size as usize
+    }
+    pub fn get_data_size(&self) -> usize {
+        self.data.len()
     }
     fn digest(&mut self) {
         let mut hasher = Sha256::new();

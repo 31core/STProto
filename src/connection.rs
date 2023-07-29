@@ -1,6 +1,6 @@
-use super::datapack::*;
-use super::handshaking::ClientHello;
-use super::totp;
+use crate::datapack::*;
+use crate::handshaking::ClientHello;
+use crate::totp;
 use crypto::aes::*;
 use crypto::blockmodes::*;
 use crypto::buffer::*;
@@ -13,6 +13,38 @@ use std::{io::Write, net::*};
 
 const RSA_BITS: usize = 3072;
 const IV_SIZE: usize = 16;
+
+impl Write for STClient {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.datapack.set_data(buf);
+        self.send()?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for STClient {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.datapack.data.is_empty() {
+            let err = self.receive();
+            if err.is_err() {
+                return Ok(0);
+            }
+        }
+
+        let size = self.datapack.get_data_size();
+
+        let mut i = 0;
+        while i < buf.len() && !self.datapack.data.is_empty() {
+            buf[i] = *self.datapack.data.first().unwrap();
+            self.datapack.data.remove(0);
+            i += 1;
+        }
+        Ok(size)
+    }
+}
 
 impl Drop for STClient {
     fn drop(&mut self) {
@@ -33,7 +65,7 @@ pub struct STClient {
     iv: [u8; IV_SIZE],
     key: Vec<u8>,
     time_stamp: u64, //the time stamp of connection setting up
-    datapack: DataPack,
+    pub datapack: DataPack,
     stream: TcpStream,
 }
 
@@ -56,7 +88,7 @@ impl STClient {
 
         /* send client version to server */
         let client_hello = ClientHello::new();
-        client_hello.send(&mut stream).unwrap();
+        client_hello.send(&mut stream)?;
 
         /* receive RSA public key from server */
         /* receive RSA pubkey size */
@@ -136,17 +168,9 @@ impl STClient {
         self.stream.read_exact(&mut header)?;
         self.datapack.parse(&header);
 
-        let mut size = self.datapack.len();
-        let mut data = Vec::new();
-        loop {
-            let mut tmp = vec![0; self.datapack.len()];
-            let recv_size = self.stream.read(&mut tmp)?;
-            data.extend(&tmp[0..recv_size]);
-            size -= recv_size;
-            if size == 0 {
-                break;
-            }
-        }
+        let size = self.datapack.len();
+        let mut data = vec![0; size];
+        self.stream.read_exact(&mut data)?;
 
         /* check sha256sum */
         if !self.datapack.verify(&data) {
@@ -158,15 +182,7 @@ impl STClient {
             .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
         Ok(())
     }
-    /// write data to be sent
-    pub fn write(&mut self, data: &[u8]) {
-        self.datapack.set_data(data);
-    }
-    /// read received data
-    pub fn read(&self) -> &[u8] {
-        self.datapack.get_data()
-    }
-    /// close a connection
+    /** close a connection */
     pub fn close(self) -> IOResult<()> {
         self.stream.shutdown(std::net::Shutdown::Both)?;
         Ok(())
@@ -205,7 +221,7 @@ impl STServer {
         /* check client version */
         {
             let mut client_hello = ClientHello::new();
-            client_hello.receive(&mut stream).unwrap();
+            client_hello.receive(&mut stream)?;
             if !client_hello.verify() {
                 return Err(Error::from(ErrorKind::Other));
             }
