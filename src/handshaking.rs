@@ -1,6 +1,7 @@
 use crate::version::*;
 use std::io::Read;
 use std::{io::Write, net::TcpStream};
+
 pub struct ClientHello {
     pub proto_version: u8,
     pub client_version_major: u8,
@@ -33,9 +34,6 @@ impl ClientHello {
         Ok(())
     }
     pub fn verify(&self) -> bool {
-        if self.proto_version != PROTO_VERSION {
-            return false;
-        }
-        true
+        self.proto_version == PROTO_VERSION
     }
 }
