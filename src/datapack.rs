@@ -60,8 +60,17 @@ impl DataPack {
             self.time_stamp = n.as_secs()
         }
     }
+    pub fn get_method(&self) -> u8 {
+        self.method
+    }
+    pub fn set_method(&mut self, method: u8) {
+        self.method = method
+    }
     pub fn get_timestamp(&self) -> u64 {
         self.time_stamp
+    }
+    pub fn get_encoding(&self) -> u8 {
+        self.encoding
     }
     pub fn set_encoding(&mut self, encoding: u8) {
         self.encoding = encoding;
@@ -77,6 +86,9 @@ impl DataPack {
     }
     pub fn get_data_size(&self) -> usize {
         self.data.len()
+    }
+    pub fn clear(&mut self) {
+        self.data.clear();
     }
     fn digest(&mut self) {
         let mut hasher = Sha256::new();

@@ -1,5 +1,6 @@
 use crate::datapack::*;
 use crate::handshaking::ClientHello;
+use crate::method::*;
 use crate::totp;
 use crypto::aes::*;
 use crypto::blockmodes::*;
@@ -16,6 +17,7 @@ const IV_SIZE: usize = 16;
 
 impl Write for STClient {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.datapack.set_method(METHOD_SEND_DATA);
         self.datapack.set_data(buf);
         self.send()?;
         Ok(buf.len())
@@ -27,8 +29,9 @@ impl Write for STClient {
 
 impl Read for STClient {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if self.datapack.data.is_empty() {
+        if self.datapack.get_data_size() == 0 {
             let err = self.receive();
+
             if err.is_err() {
                 return Ok(0);
             }
@@ -160,6 +163,17 @@ impl STClient {
         let data = self.datapack.build();
         self.stream.write_all(&data)?;
 
+        let original_datapack = self.datapack.clone();
+
+        /* METHOD_OK doesn't require verification, so we needn't handle METHOD_OK or METHOD_REQUEST_RESEND reply. */
+        if self.datapack.get_method() != METHOD_OK {
+            self.receive()?;
+            if self.datapack.get_method() == METHOD_REQUEST_RESEND {
+                self.datapack = original_datapack;
+                self.send()?;
+            }
+        }
+
         Ok(())
     }
     pub fn receive(&mut self) -> IOResult<()> {
@@ -174,7 +188,17 @@ impl STClient {
 
         /* check sha256sum */
         if !self.datapack.verify(&data) {
-            return Err(Error::from(ErrorKind::Other));
+            /* If failed, then request resend */
+            self.datapack.set_method(METHOD_REQUEST_RESEND);
+            self.datapack.clear();
+            self.send()?;
+            self.receive()?;
+        } else if self.datapack.get_method() != METHOD_OK {
+            let original_datapack = self.datapack.clone();
+            self.datapack.set_method(METHOD_OK);
+            self.datapack.clear();
+            self.send()?;
+            self.datapack = original_datapack;
         }
 
         let key = totp::gen_key(&self.key, self.datapack.get_timestamp());

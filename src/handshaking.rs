@@ -1,4 +1,4 @@
-use super::version::*;
+use crate::version::*;
 use std::io::Read;
 use std::{io::Write, net::TcpStream};
 pub struct ClientHello {
