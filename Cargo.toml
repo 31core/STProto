@@ -9,6 +9,9 @@ authors = ["31core"]
 rust-crypto = "0.2.36"
 rand = "0.8.5"
 rsa = "0.8.1"
+zstd = "0.12.4"
+flate2 = "1.0.26"
+lzma-rs = "0.3.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
