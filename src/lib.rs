@@ -4,5 +4,6 @@ pub mod method;
 pub mod version;
 
 mod datapack;
+mod exports;
 mod handshaking;
 mod totp;

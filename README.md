@@ -3,9 +3,10 @@
 STProto (Secure Transport Protocol) is an End-to-End Encryption network protocol. Like OpenSSL, it's a Session Layer Protocol, it focuses on secure transport bitween server and client, and provides a universal API which is similar to socket.
 
 ## Language bindings
-|Language|Interface|
-|--------|---------|
-|Rust    |Native   |
+|Language|Interface     |
+|--------|--------------|
+|Rust    |Native        |
+|C       |Shared Library|
 
 ## Get start
 With STProto, you can write a simple `server` and `client` like this.
