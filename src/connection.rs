@@ -152,24 +152,28 @@ impl STClient {
 
         Ok(conn)
     }
+    /** Send data */
     pub fn send(&mut self) -> IOResult<()> {
         self.datapack.update_timestamp();
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp(), totp::DEFAULT_SPAN);
 
-        if self.datapack.get_encoding() == ZSTD {
-            self.datapack
-                .set_data(&zstd::encode_all(self.datapack.get_data(), 3)?);
-        }
-        if self.datapack.get_encoding() == GZIP {
-            let mut encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            encoder.write_all(self.datapack.get_data())?;
-            self.datapack.set_data(&encoder.finish()?);
-        }
-        if self.datapack.get_encoding() == LZMA2 {
-            let mut compressed_data = Vec::new();
-            lzma_rs::lzma2_compress(&mut self.datapack.get_data(), &mut compressed_data)?;
-            self.datapack.set_data(&compressed_data);
+        match self.datapack.get_encoding() {
+            ZSTD => {
+                self.datapack
+                    .set_data(&zstd::encode_all(self.datapack.get_data(), 3)?);
+            }
+            GZIP => {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(self.datapack.get_data())?;
+                self.datapack.set_data(&encoder.finish()?);
+            }
+            LZMA2 => {
+                let mut compressed_data = Vec::new();
+                lzma_rs::lzma2_compress(&mut self.datapack.get_data(), &mut compressed_data)?;
+                self.datapack.set_data(&compressed_data);
+            }
+            _ => {}
         }
 
         self.datapack.set_data(&aes256_cbc_encrypt(
@@ -207,39 +211,43 @@ impl STClient {
         if !self.datapack.verify(&data) {
             /* If failed, then request resend */
             self.datapack.set_method(METHOD_REQUEST_RESEND);
-            self.datapack.set_encoding(NULL_DATA);
+            self.datapack.set_encoding(PLAIN);
             self.datapack.clear();
             self.send()?;
             self.receive()?;
         } else if self.datapack.get_method() != METHOD_OK {
             let original_datapack = self.datapack.clone();
-            self.datapack.set_encoding(NULL_DATA);
+            self.datapack.set_encoding(PLAIN);
             self.datapack.set_method(METHOD_OK);
             self.datapack.clear();
             self.send()?;
             self.datapack = original_datapack;
         }
 
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp());
+        let key = totp::gen_key(&self.key, self.datapack.get_timestamp(), totp::DEFAULT_SPAN);
         self.datapack
             .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
 
-        if self.datapack.get_encoding() == ZSTD {
-            self.datapack
-                .set_data(&zstd::decode_all(self.datapack.get_data())?);
+        match self.datapack.get_encoding() {
+            ZSTD => {
+                self.datapack
+                    .set_data(&zstd::decode_all(self.datapack.get_data())?);
+            }
+            GZIP => {
+                let mut decoder = flate2::read::GzDecoder::new(self.datapack.get_data());
+                let mut decompressed_data = Vec::new();
+                decoder.read_to_end(&mut decompressed_data)?;
+                self.datapack.set_data(&decompressed_data);
+            }
+            LZMA2 => {
+                let mut decompressed_data = Vec::new();
+                lzma_rs::lzma2_decompress(&mut self.datapack.get_data(), &mut decompressed_data)
+                    .unwrap();
+                self.datapack.set_data(&decompressed_data);
+            }
+            _ => {}
         }
-        if self.datapack.get_encoding() == GZIP {
-            let mut decoder = flate2::read::GzDecoder::new(self.datapack.get_data());
-            let mut decompressed_data = Vec::new();
-            decoder.read_to_end(&mut decompressed_data)?;
-            self.datapack.set_data(&decompressed_data);
-        }
-        if self.datapack.get_encoding() == LZMA2 {
-            let mut decompressed_data = Vec::new();
-            lzma_rs::lzma2_decompress(&mut self.datapack.get_data(), &mut decompressed_data)
-                .unwrap();
-            self.datapack.set_data(&decompressed_data);
-        }
+
         Ok(())
     }
     /** close a connection */

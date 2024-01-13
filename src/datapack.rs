@@ -33,6 +33,7 @@ impl DataPack {
 
         pack
     }
+    /** parse datapack from bytes */
     pub fn parse(&mut self, data: &[u8]) {
         self.method = data[0];
         self.time_stamp = u64::from_be_bytes(data[1..9].try_into().unwrap());
