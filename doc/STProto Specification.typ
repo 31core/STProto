@@ -42,6 +42,8 @@ struct data_pack {
 = Handshaking
 Many information will be exchanged in this stage.
 
+== Client hello
+
 The first step of the STProto handshake is the client hello message, the client sends its protocol version, client major and minor version to the server. If the server does not support this version of protocol, it will close the connection immediately.
 
 The structure of client hello datapack is as follow:
@@ -53,17 +55,16 @@ struct cient_hello_data_pack {
 };
 ```
 
-The second step is key exchange, the server sends its RSA-3072 public key to the client, the client then encrypt its random key(we call it _seed_) with the server's public key, and sends back to the server. Thus, the server and the client exchanged their key safely. The seed can be of any size, long size of seed performs more safely than short one.
+== Key exchange
 
-= Dynamic Key
-AES-256 key in STProto will be changed by timestamp, which is similar to TOTP. This will increase dificulty of breaking the key.
+The server sends its RSA-3072 public key to the client, the client then encrypt its random key(we call it _seed_) with the server's public key, and sends back to the server. Thus, the server and the client exchanged their key safely. The seed can be of any size, long size of seed performs more safely than short one.
 
-The formula of genating AES key is:
+*Supported algorithms*
 
-$ op("Key") = op("SHA256")(op("Seed") + op("floor")(op("TimeStamp") / T)) $
-
-The timestamp is difined in the header. T is the time span of refreshing AES key, in TOTP it is usually 30s, but in STProto it is decided when handshaking. It will be safer when T is smaller, T can be $>=$ 1.
-
-Sinece RSA-3072 can transfer 373 bytes of data, the attacker has to test maximumly $sum_(n=1)^373 256^n$ times to find the correct seed, while in fixed AES256 key, it takes only $2^256$ times.
-
-It is prossible to test the AES256 key after SHA256 function, but this key can be decrypt only a few datapacks, when $op("floor")(op("timestamp") / T)$ is changed, the attacker has to test another key.
+#table(
+    columns: (auto, auto),
+    [*Value*], [*Algorithm*],
+    [0x01], [AES-128-CBC],
+    [0x02], [AES-256-CBC],
+    [0x03], [ChaCha20]
+)

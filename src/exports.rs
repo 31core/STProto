@@ -1,4 +1,5 @@
 use crate::connection::*;
+use crate::crypto::EncryptionType;
 use std::ffi::*;
 use std::io::*;
 
@@ -34,9 +35,19 @@ pub extern "C" fn STProto_accept(server: *mut u8) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn STProto_connect(host: *const c_char, port: c_short) -> *mut u8 {
-    let client =
-        unsafe { STClient::connect(CStr::from_ptr(host).to_str().unwrap(), port as u16).unwrap() };
+pub extern "C" fn STProto_connect(
+    host: *const c_char,
+    port: c_short,
+    encryption_type: c_char,
+) -> *mut u8 {
+    let client = unsafe {
+        STClient::connect(
+            CStr::from_ptr(host).to_str().unwrap(),
+            port as u16,
+            EncryptionType::new(encryption_type as u8),
+        )
+        .unwrap()
+    };
 
     let layout = std::alloc::Layout::new::<STClient>();
 

@@ -5,6 +5,17 @@ use std::time::*;
 pub const HEADER_SIZE: usize = 46;
 
 #[derive(Debug, Clone, Default)]
+/**
+ * # Data structure
+ *
+ * |Start|End|Description|
+ * |-----|---|-----------|
+ * |0    |1  |Method     |
+ * |1    |9  |Timestamp  |
+ * |9    |10 |Encoding   |
+ * |10   |42 |SHA256 summary|
+ * |42   |46 |Size       |
+*/
 pub struct DataPack {
     method: u8,
     time_stamp: u64,
@@ -14,7 +25,6 @@ pub struct DataPack {
     pub data: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl DataPack {
     pub fn new() -> DataPack {
         DataPack::default()

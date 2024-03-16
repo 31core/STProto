@@ -1,22 +1,16 @@
+use crate::crypto::*;
 use crate::datapack::*;
 use crate::encoding::*;
-use crate::handshaking::ClientHello;
+use crate::handshaking::*;
 use crate::method::*;
-use crate::totp;
-use crypto::aes::*;
-use crypto::blockmodes::*;
-use crypto::buffer::*;
-use rand::{Rng, RngCore};
+
 use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
 use rsa::*;
 use std::io::Result as IOResult;
 use std::{io::*, net::*};
 
-const RSA_BITS: usize = 3072;
-const IV_SIZE: usize = 16;
-
 impl Write for STClient {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> IOResult<usize> {
         self.datapack.set_method(METHOD_SEND_DATA);
         self.datapack.set_data(buf);
         self.send()?;
@@ -28,7 +22,7 @@ impl Write for STClient {
 }
 
 impl Read for STClient {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
         if self.datapack.get_data_size() == 0 {
             let err = self.receive();
 
@@ -49,27 +43,15 @@ impl Read for STClient {
     }
 }
 
-impl Drop for STClient {
-    fn drop(&mut self) {
-        /* erase keys from memory */
-        for i in &mut self.key {
-            *i = 0;
-        }
-        for i in &mut self.iv {
-            *i = 0;
-        }
-    }
-}
-
 #[allow(dead_code)]
 pub struct STClient {
     host: String,
     port: u16,
-    iv: [u8; IV_SIZE],
-    key: Vec<u8>,
+    key: Key,
     time_stamp: u64, //the time stamp of connection setting up
     pub datapack: DataPack,
     stream: TcpStream,
+    pub encryption_type: EncryptionType,
 }
 
 #[allow(dead_code)]
@@ -81,13 +63,8 @@ pub struct STServer {
 }
 
 impl STClient {
-    pub fn connect(host: &str, port: u16) -> IOResult<Self> {
-        let mut stream;
-
-        match TcpStream::connect(format!("{}:{}", host, port)) {
-            Ok(s) => stream = s,
-            Err(_) => return Err(Error::from(ErrorKind::Other)),
-        }
+    pub fn connect(host: &str, port: u16, encryption_type: EncryptionType) -> IOResult<Self> {
+        let mut stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
         /* send client version to server */
         let client_hello = ClientHello::new();
@@ -104,50 +81,21 @@ impl STClient {
         let mut buf = vec![0; size as usize];
         stream.read_exact(&mut buf[..])?;
         let pub_key = RsaPublicKey::from_public_key_der(&buf).unwrap();
-        /* generate a key */
-        let key = {
-            let mut rng = rand::thread_rng();
-            let key_len = rng.gen_range(128..=(RSA_BITS / 8 - 11));
-            let mut key = vec![0; key_len];
-            rng.fill_bytes(&mut key);
-            key
-        };
-        let encrypted_key = {
-            let mut rng = rand::thread_rng();
-            pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &key).unwrap()
-        };
 
-        /* send key size */
-        stream.write_all(&(encrypted_key.len() as u16).to_be_bytes())?;
-        /* send key */
-        stream.write_all(&encrypted_key)?;
-
-        /* generate and send iv to server */
-        /* generate iv */
-        let iv = {
-            let mut rng = rand::thread_rng();
-            let mut iv = [0; IV_SIZE];
-            rng.fill_bytes(&mut iv);
-            iv
-        };
-        let encrypted_iv = {
-            let mut rng = rand::thread_rng();
-            pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
-        };
-        stream.write_all(&(encrypted_iv.len() as u16).to_be_bytes())?;
-        stream.write_all(&encrypted_iv)?;
+        let mut key_exchanger = KeyExchange::new(encryption_type);
+        key_exchanger.send(&mut stream, &pub_key)?;
 
         let conn = STClient {
             host: host.to_string(),
             port,
-            iv,
-            key,
+            key: key_exchanger.key,
             time_stamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
             datapack: DataPack::new(),
             stream,
+            encryption_type: key_exchanger.encryption,
         };
 
         Ok(conn)
@@ -155,7 +103,6 @@ impl STClient {
     /** Send data */
     pub fn send(&mut self) -> IOResult<()> {
         self.datapack.update_timestamp();
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp(), totp::DEFAULT_SPAN);
 
         match self.datapack.get_encoding() {
             ZSTD => {
@@ -176,11 +123,33 @@ impl STClient {
             _ => {}
         }
 
-        self.datapack.set_data(&aes256_cbc_encrypt(
-            self.datapack.get_data(),
-            &key,
-            &self.iv,
-        ));
+        match self.encryption_type {
+            EncryptionType::AES128CBC => {
+                if let Key::AES128CBC((key, iv)) = self.key {
+                    self.datapack.set_data(&aes128_cbc_encrypt(
+                        self.datapack.get_data(),
+                        &key,
+                        &iv,
+                    ));
+                }
+            }
+            EncryptionType::AES256CBC => {
+                if let Key::AES256CBC((key, iv)) = self.key {
+                    self.datapack.set_data(&aes256_cbc_encrypt(
+                        self.datapack.get_data(),
+                        &key,
+                        &iv,
+                    ));
+                }
+            }
+            EncryptionType::ChaCha20 => {
+                if let Key::ChaCha20((key, iv)) = self.key {
+                    self.datapack
+                        .set_data(&chacah20_encrypt(key, iv, self.datapack.get_data()));
+                }
+            }
+        }
+
         let data = self.datapack.build();
         self.stream.write_all(&data)?;
 
@@ -224,9 +193,25 @@ impl STClient {
             self.datapack = original_datapack;
         }
 
-        let key = totp::gen_key(&self.key, self.datapack.get_timestamp(), totp::DEFAULT_SPAN);
-        self.datapack
-            .set_data(&aes256_cbc_decrypt(&data, &key, &self.iv));
+        match self.encryption_type {
+            EncryptionType::AES128CBC => {
+                if let Key::AES128CBC((key, iv)) = self.key {
+                    self.datapack
+                        .set_data(&aes128_cbc_decrypt(&data, &key, &iv))
+                }
+            }
+            EncryptionType::AES256CBC => {
+                if let Key::AES256CBC((key, iv)) = self.key {
+                    self.datapack
+                        .set_data(&aes256_cbc_decrypt(&data, &key, &iv))
+                }
+            }
+            EncryptionType::ChaCha20 => {
+                if let Key::ChaCha20((key, iv)) = self.key {
+                    self.datapack.set_data(&chacah20_decrypt(key, iv, &data))
+                }
+            }
+        }
 
         match self.datapack.get_encoding() {
             ZSTD => {
@@ -304,48 +289,21 @@ impl STServer {
         stream.write_all(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
         stream.write_all(pub_key_der)?; //send RSA pubkey
 
-        /* receive key from client */
-        /* receive key size */
-        let size = {
-            let mut size = [0; 2];
-            stream.read_exact(&mut size)?;
-            u16::from_be_bytes(size)
-        };
-        /* receive key */
-        let key = {
-            let mut buf = vec![0; size as usize];
-            stream.read_exact(&mut buf)?;
-            priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap()
-        };
+        let mut key_exchanger = KeyExchange::default();
 
-        /* receive key from client */
-        /* receive key size */
-        let size = {
-            let mut size = [0; 2];
-            stream.read_exact(&mut size)?;
-            u16::from_be_bytes(size)
-        };
-        /* receive key */
-        let iv = {
-            let mut buf = vec![0; size as usize];
-            stream.read_exact(&mut buf)?;
-            let data = priv_key.decrypt(rsa::Pkcs1v15Encrypt, &buf).unwrap();
-            let mut iv = [0; IV_SIZE];
-            iv.copy_from_slice(&data[..IV_SIZE]);
-            iv
-        };
+        key_exchanger.receive(&mut stream, &priv_key)?;
 
         let client = STClient {
             host,
             port,
-            key,
-            iv,
+            key: key_exchanger.key,
             time_stamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
             datapack: DataPack::new(),
             stream,
+            encryption_type: key_exchanger.encryption,
         };
 
         self.clients.push(client);
@@ -356,50 +314,4 @@ impl STServer {
         let len = self.clients.len();
         &mut self.clients[len - 1]
     }
-}
-
-fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut encryptor = cbc_encryptor(KeySize::KeySize256, key, iv, PkcsPadding);
-
-    let mut encrypted_data = Vec::<u8>::new();
-    let mut read_buffer = RefReadBuffer::new(data);
-    let mut buffer = [0; 4096];
-    let mut write_buffer = RefWriteBuffer::new(&mut buffer);
-
-    loop {
-        let result = encryptor
-            .encrypt(&mut read_buffer, &mut write_buffer, true)
-            .unwrap();
-
-        encrypted_data.extend(write_buffer.take_read_buffer().take_remaining());
-
-        match result {
-            BufferResult::BufferUnderflow => break,
-            BufferResult::BufferOverflow => continue,
-        }
-    }
-
-    encrypted_data
-}
-
-fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut decryptor = cbc_decryptor(KeySize::KeySize256, key, iv, PkcsPadding);
-
-    let mut decrypted_data = Vec::<u8>::new();
-    let mut read_buffer = RefReadBuffer::new(data);
-    let mut buffer = [0; 4096];
-    let mut write_buffer = RefWriteBuffer::new(&mut buffer);
-
-    loop {
-        let result = decryptor
-            .decrypt(&mut read_buffer, &mut write_buffer, true)
-            .unwrap();
-        decrypted_data.extend(write_buffer.take_read_buffer().take_remaining());
-        match result {
-            BufferResult::BufferUnderflow => break,
-            BufferResult::BufferOverflow => continue,
-        }
-    }
-
-    decrypted_data
 }
