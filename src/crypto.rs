@@ -41,12 +41,12 @@ impl EncryptionType {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Key {
-    AES128CBC(([u8; 16], [u8; IV_SIZE])),
-    AES256CBC(([u8; 32], [u8; IV_SIZE])),
-    ChaCha20(([u8; CHACHA20_KEY_SIZE], [u8; CHACHA20_NONCE_SIZE])),
+    AES128CBC([u8; 16]),
+    AES256CBC([u8; 32]),
+    ChaCha20([u8; CHACHA20_KEY_SIZE]),
 }
 
-pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8; IV_SIZE]) -> Vec<u8> {
     let mut encryptor = cbc_encryptor(KeySize::KeySize128, key, iv, PkcsPadding);
 
     let mut encrypted_data = Vec::new();
@@ -70,7 +70,7 @@ pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     encrypted_data
 }
 
-pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8; IV_SIZE]) -> Vec<u8> {
     let mut decryptor = cbc_decryptor(KeySize::KeySize128, key, iv, PkcsPadding);
 
     let mut decrypted_data = Vec::new();
@@ -92,7 +92,7 @@ pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     decrypted_data
 }
 
-pub fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8; IV_SIZE]) -> Vec<u8> {
     let mut encryptor = cbc_encryptor(KeySize::KeySize256, key, iv, PkcsPadding);
 
     let mut encrypted_data = Vec::new();
@@ -116,7 +116,7 @@ pub fn aes256_cbc_encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     encrypted_data
 }
 
-pub fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+pub fn aes256_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8; IV_SIZE]) -> Vec<u8> {
     let mut decryptor = cbc_decryptor(KeySize::KeySize256, key, iv, PkcsPadding);
 
     let mut decrypted_data = Vec::new();

@@ -4,26 +4,28 @@ use crate::encoding::*;
 use crate::handshaking::*;
 use crate::method::*;
 
+use rand::RngCore;
 use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
 use rsa::*;
-use std::io::Result as IOResult;
-use std::{io::*, net::*};
+use std::io::{Result as IOResult, ErrorKind, Error};
+use std::io::{Read, Write, BufReader};
+use std::net::*;
 
 impl Write for STClient {
     fn write(&mut self, buf: &[u8]) -> IOResult<usize> {
-        self.datapack.set_method(METHOD_SEND_DATA);
-        self.datapack.set_data(buf);
+        self.datapack.method = METHOD_SEND;
+        self.datapack.payload.extend(buf);
         self.send()?;
         Ok(buf.len())
     }
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> IOResult<()> {
         Ok(())
     }
 }
 
 impl Read for STClient {
     fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
-        if self.datapack.get_data_size() == 0 {
+        if self.datapack.payload.is_empty() {
             let err = self.receive();
 
             if err.is_err() {
@@ -31,12 +33,12 @@ impl Read for STClient {
             }
         }
 
-        let size = self.datapack.get_data_size();
+        let size = self.datapack.payload.len();
 
         let mut i = 0;
-        while i < buf.len() && !self.datapack.data.is_empty() {
-            buf[i] = *self.datapack.data.first().unwrap();
-            self.datapack.data.remove(0);
+        while i < buf.len() && !self.datapack.payload.is_empty() {
+            buf[i] = *self.datapack.payload.first().unwrap();
+            self.datapack.payload.remove(0);
             i += 1;
         }
         Ok(size)
@@ -48,6 +50,7 @@ pub struct STClient {
     host: String,
     port: u16,
     key: Key,
+    session_id: u64,
     time_stamp: u64, //the time stamp of connection setting up
     pub datapack: DataPack,
     stream: TcpStream,
@@ -67,7 +70,7 @@ impl STClient {
         let mut stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
         /* send client version to server */
-        let client_hello = ClientHello::new();
+        let client_hello = ClientHello::default();
         client_hello.send(&mut stream)?;
 
         /* receive RSA public key from server */
@@ -89,11 +92,12 @@ impl STClient {
             host: host.to_string(),
             port,
             key: key_exchanger.key,
+            session_id: client_hello.session_id,
             time_stamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            datapack: DataPack::new(),
+            datapack: DataPack::default(),
             stream,
             encryption_type: key_exchanger.encryption,
         };
@@ -103,49 +107,59 @@ impl STClient {
     /** Send data */
     pub fn send(&mut self) -> IOResult<()> {
         self.datapack.update_timestamp();
+        self.datapack.session_id = self.session_id;
 
-        match self.datapack.get_encoding() {
+        match self.datapack.encoding {
             ZSTD => {
                 self.datapack
-                    .set_data(&zstd::encode_all(self.datapack.get_data(), 3)?);
+                    .payload = zstd::encode_all(&self.datapack.payload[..], 3)?.to_vec();
             }
             GZIP => {
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(self.datapack.get_data())?;
-                self.datapack.set_data(&encoder.finish()?);
+                encoder.write_all(&self.datapack.payload)?;
+                self.datapack.payload.extend(&encoder.finish()?);
             }
             LZMA2 => {
                 let mut compressed_data = Vec::new();
-                lzma_rs::lzma2_compress(&mut self.datapack.get_data(), &mut compressed_data)?;
-                self.datapack.set_data(&compressed_data);
+                lzma_rs::lzma2_compress(&mut BufReader::new(&self.datapack.payload[..]), &mut compressed_data)?;
+                self.datapack.payload.extend(&compressed_data);
             }
             _ => {}
         }
 
         match self.encryption_type {
             EncryptionType::AES128CBC => {
-                if let Key::AES128CBC((key, iv)) = self.key {
-                    self.datapack.set_data(&aes128_cbc_encrypt(
-                        self.datapack.get_data(),
+                self.datapack.crypto = vec![0; IV_SIZE];
+                rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
+                let iv: [u8; IV_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES128CBC(key) = self.key {
+                    self.datapack.payload = aes128_cbc_encrypt(
+                        &self.datapack.payload,
                         &key,
                         &iv,
-                    ));
+                    );
                 }
             }
             EncryptionType::AES256CBC => {
-                if let Key::AES256CBC((key, iv)) = self.key {
-                    self.datapack.set_data(&aes256_cbc_encrypt(
-                        self.datapack.get_data(),
+                self.datapack.crypto = vec![0; IV_SIZE];
+                rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
+                let iv: [u8; IV_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES256CBC(key) = self.key {
+                    self.datapack.payload = aes256_cbc_encrypt(
+                        &self.datapack.payload,
                         &key,
                         &iv,
-                    ));
+                    );
                 }
             }
             EncryptionType::ChaCha20 => {
-                if let Key::ChaCha20((key, iv)) = self.key {
+                self.datapack.crypto = vec![0; CHACHA20_NONCE_SIZE];
+                rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
+                let nonce: [u8; CHACHA20_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::ChaCha20(key) = self.key {
                     self.datapack
-                        .set_data(&chacah20_encrypt(key, iv, self.datapack.get_data()));
+                        .payload = chacah20_encrypt(key, nonce, &self.datapack.payload);
                 }
             }
         }
@@ -156,9 +170,9 @@ impl STClient {
         let original_datapack = self.datapack.clone();
 
         /* METHOD_OK doesn't require verification, so we needn't handle METHOD_OK or METHOD_REQUEST_RESEND reply. */
-        if self.datapack.get_method() != METHOD_OK {
+        if self.datapack.method != METHOD_OK {
             self.receive()?;
-            if self.datapack.get_method() == METHOD_REQUEST_RESEND {
+            if self.datapack.method == METHOD_REQUEST_RESEND {
                 self.datapack = original_datapack;
                 self.send()?;
             }
@@ -172,63 +186,74 @@ impl STClient {
         self.stream.read_exact(&mut header)?;
         self.datapack.parse(&header);
 
-        let size = self.datapack.len();
-        let mut data = vec![0; size];
-        self.stream.read_exact(&mut data)?;
+        let mut crypto_size = [0; 2];
+        self.stream.read_exact(&mut crypto_size)?;
+        self.datapack.crypto = vec![0; u16::from_be_bytes(crypto_size) as usize];
+        self.stream.read_exact(&mut self.datapack.crypto)?;
+
+        let mut payload_size = [0; 2];
+        self.stream.read_exact(&mut payload_size)?;
+        self.datapack.payload = vec![0; u16::from_be_bytes(payload_size) as usize];
+        self.stream.read_exact(&mut self.datapack.payload)?;
 
         /* check sha256sum */
-        if !self.datapack.verify(&data) {
+        if !self.datapack.verify(&self.datapack.payload) {
             /* If failed, then request resend */
-            self.datapack.set_method(METHOD_REQUEST_RESEND);
-            self.datapack.set_encoding(PLAIN);
-            self.datapack.clear();
+            self.datapack.method = METHOD_REQUEST_RESEND;
+            self.datapack.encoding = PLAIN;
+            self.datapack.payload.clear();
             self.send()?;
             self.receive()?;
-        } else if self.datapack.get_method() != METHOD_OK {
+        } else if self.datapack.method != METHOD_OK {
             let original_datapack = self.datapack.clone();
-            self.datapack.set_encoding(PLAIN);
-            self.datapack.set_method(METHOD_OK);
-            self.datapack.clear();
+            self.datapack.encoding = PLAIN;
+            self.datapack.method = METHOD_OK;
+            self.datapack.payload.clear();
             self.send()?;
             self.datapack = original_datapack;
         }
 
         match self.encryption_type {
             EncryptionType::AES128CBC => {
-                if let Key::AES128CBC((key, iv)) = self.key {
+                let iv: [u8; IV_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+                if let Key::AES128CBC(key) = self.key {
                     self.datapack
-                        .set_data(&aes128_cbc_decrypt(&data, &key, &iv))
+                        .payload = aes128_cbc_decrypt(&self.datapack.payload, &key, &iv);
                 }
             }
             EncryptionType::AES256CBC => {
-                if let Key::AES256CBC((key, iv)) = self.key {
+                if let Key::AES256CBC(key) = self.key {
+                    let iv: [u8; IV_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
                     self.datapack
-                        .set_data(&aes256_cbc_decrypt(&data, &key, &iv))
+                        .payload = aes256_cbc_decrypt(&self.datapack.payload, &key, &iv);
                 }
             }
             EncryptionType::ChaCha20 => {
-                if let Key::ChaCha20((key, iv)) = self.key {
-                    self.datapack.set_data(&chacah20_decrypt(key, iv, &data))
+                let nonce: [u8; CHACHA20_NONCE_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+                if let Key::ChaCha20(key) = self.key {
+                    self.datapack.payload = chacah20_decrypt(key, nonce, &self.datapack.payload);
                 }
             }
         }
 
-        match self.datapack.get_encoding() {
+        match self.datapack.encoding {
             ZSTD => {
+                let payload = self.datapack
+                .payload.clone();
                 self.datapack
-                    .set_data(&zstd::decode_all(self.datapack.get_data())?);
+                    .payload = zstd::decode_all(&payload[..])?;
             }
             GZIP => {
-                let mut decoder = flate2::read::GzDecoder::new(self.datapack.get_data());
+                let mut decoder = flate2::read::GzDecoder::new(&self.datapack.payload[..]);
                 let mut decompressed_data = Vec::new();
                 decoder.read_to_end(&mut decompressed_data)?;
-                self.datapack.set_data(&decompressed_data);
+                self.datapack.payload = decompressed_data;
             }
             LZMA2 => {
                 let mut decompressed_data = Vec::new();
-                lzma_rs::lzma2_decompress(&mut self.datapack.get_data(), &mut decompressed_data)
+                lzma_rs::lzma2_decompress(&mut BufReader::new(&self.datapack.payload[..]), &mut decompressed_data)
                     .unwrap();
-                self.datapack.set_data(&decompressed_data);
+                self.datapack.payload = decompressed_data;
             }
             _ => {}
         }
@@ -253,7 +278,7 @@ impl STServer {
 
         Ok(conn)
     }
-    pub fn listen(&mut self) -> Result<()> {
+    pub fn listen(&mut self) -> IOResult<()> {
         let host;
         let port;
         let mut stream;
@@ -272,12 +297,10 @@ impl STServer {
             }
         }
         /* check client version */
-        {
-            let mut client_hello = ClientHello::new();
-            client_hello.receive(&mut stream)?;
-            if !client_hello.verify() {
-                return Err(Error::from(ErrorKind::Other));
-            }
+        let mut client_hello = ClientHello::default();
+        client_hello.receive(&mut stream)?;
+        if !client_hello.verify() {
+            return Err(Error::from(ErrorKind::Other));
         }
 
         let mut rng = rand::thread_rng();
@@ -296,12 +319,13 @@ impl STServer {
         let client = STClient {
             host,
             port,
+            session_id: client_hello.session_id,
             key: key_exchanger.key,
             time_stamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            datapack: DataPack::new(),
+            datapack: DataPack::default(),
             stream,
             encryption_type: key_exchanger.encryption,
         };

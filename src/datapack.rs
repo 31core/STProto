@@ -2,7 +2,7 @@ use crypto::digest::Digest;
 use crypto::sha2::Sha256;
 use std::time::*;
 
-pub const HEADER_SIZE: usize = 46;
+pub const HEADER_SIZE: usize = 50;
 
 #[derive(Debug, Clone, Default)]
 /**
@@ -11,48 +11,49 @@ pub const HEADER_SIZE: usize = 46;
  * |Start|End|Description|
  * |-----|---|-----------|
  * |0    |1  |Method     |
- * |1    |9  |Timestamp  |
- * |9    |10 |Encoding   |
- * |10   |42 |SHA256 summary|
- * |42   |46 |Size       |
+ * |1    |9  |Session ID |
+ * |9    |17  |Timestamp  |
+ * |17    |18 |Encoding   |
+ * |18   |50 |SHA256 summary|
 */
 pub struct DataPack {
-    method: u8,
+    pub method: u8,
+    pub session_id: u64,
     time_stamp: u64,
-    encoding: u8,
+    pub encoding: u8,
     sha256: [u8; 32],
-    size: u32,
-    pub data: Vec<u8>,
+    pub crypto: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl DataPack {
-    pub fn new() -> DataPack {
-        DataPack::default()
-    }
     pub fn build(&mut self) -> Vec<u8> {
         self.digest();
-        self.size = self.data.len() as u32;
 
         let mut pack: Vec<u8> = vec![];
         pack.push(self.method);
+        pack.extend(self.session_id.to_be_bytes());
         pack.extend(self.time_stamp.to_be_bytes());
         pack.push(self.encoding);
         pack.extend(self.sha256);
-        pack.extend(self.size.to_be_bytes());
-        pack.extend(&self.data);
+        pack.extend((self.crypto.len() as u16).to_be_bytes());
+        pack.extend(&self.crypto);
+        pack.extend((self.payload.len() as u16).to_be_bytes());
+        pack.extend(&self.payload);
 
         pack
     }
     /** parse datapack from bytes */
     pub fn parse(&mut self, data: &[u8]) {
         self.method = data[0];
-        self.time_stamp = u64::from_be_bytes(data[1..9].try_into().unwrap());
-        self.encoding = data[9];
-        self.sha256 = data[10..42].try_into().unwrap();
-        self.size = u32::from_be_bytes(data[42..46].try_into().unwrap());
-        for byte in &data[46..] {
+        self.session_id = u64::from_be_bytes(data[1..9].try_into().unwrap());
+        self.time_stamp = u64::from_be_bytes(data[9..17].try_into().unwrap());
+        self.encoding = data[17];
+        self.sha256 = data[18..50].try_into().unwrap();
+
+        /*for byte in &data[54..] {
             self.data.push(*byte);
-        }
+        }*/
     }
     /** checksum for SHA256 */
     pub fn verify(&self, data: &[u8]) -> bool {
@@ -71,39 +72,9 @@ impl DataPack {
             self.time_stamp = n.as_secs()
         }
     }
-    pub fn get_method(&self) -> u8 {
-        self.method
-    }
-    pub fn set_method(&mut self, method: u8) {
-        self.method = method
-    }
-    pub fn get_timestamp(&self) -> u64 {
-        self.time_stamp
-    }
-    pub fn get_encoding(&self) -> u8 {
-        self.encoding
-    }
-    pub fn set_encoding(&mut self, encoding: u8) {
-        self.encoding = encoding;
-    }
-    pub fn set_data(&mut self, data: &[u8]) {
-        self.data = data.to_vec();
-    }
-    pub fn get_data(&self) -> &[u8] {
-        &self.data
-    }
-    pub fn len(&self) -> usize {
-        self.size as usize
-    }
-    pub fn get_data_size(&self) -> usize {
-        self.data.len()
-    }
-    pub fn clear(&mut self) {
-        self.data.clear();
-    }
     fn digest(&mut self) {
         let mut hasher = Sha256::new();
-        hasher.input(&self.data);
+        hasher.input(&self.payload);
 
         hasher.result(&mut self.sha256);
     }

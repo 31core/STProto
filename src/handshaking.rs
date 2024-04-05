@@ -10,31 +10,39 @@ pub struct ClientHello {
     pub proto_version: u8,
     pub client_version_major: u8,
     pub client_version_minor: u8,
+    pub session_id: u64,
 }
 
-impl ClientHello {
-    pub fn new() -> Self {
+impl Default for ClientHello {
+    fn default() -> Self {
         ClientHello {
             proto_version: PROTO_VERSION,
             client_version_major: CLIENT_VERSION_MAJOR,
             client_version_minor: CLIENT_VERSION_MINOR,
+            session_id: rand::random(),
         }
     }
+}
+
+impl ClientHello {
     pub fn send(&self, stream: &mut TcpStream) -> std::io::Result<()> {
-        let data = vec![
+        let mut data = vec![
             self.proto_version,
             self.client_version_major,
             self.client_version_minor,
         ];
+
+        data.extend(self.session_id.to_be_bytes());
         stream.write_all(&data)?;
         Ok(())
     }
     pub fn receive(&mut self, stream: &mut TcpStream) -> std::io::Result<()> {
-        let mut data = [0; 3];
+        let mut data = [0; 11];
         stream.read_exact(&mut data)?;
         self.proto_version = data[0];
         self.client_version_major = data[1];
         self.client_version_minor = data[2];
+        self.session_id = u64::from_be_bytes(data[3..].try_into().unwrap());
         Ok(())
     }
     pub fn verify(&self) -> bool {
@@ -57,7 +65,7 @@ impl KeyExchange {
     pub fn new(encryption: EncryptionType) -> Self {
         Self {
             encryption,
-            key: Key::AES256CBC(([0; 32], [0; IV_SIZE])),
+            key: Key::AES256CBC([0; 32]),
         }
     }
     /** send key to server */
@@ -68,7 +76,7 @@ impl KeyExchange {
             EncryptionType::AES128CBC => {
                 self.gen_aes128cbc_key();
 
-                if let Key::AES128CBC((key, iv)) = self.key {
+                if let Key::AES128CBC(key) = self.key {
                     let mut rng = rand::thread_rng();
                     let encrypted_key = pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &key).unwrap();
 
@@ -76,20 +84,12 @@ impl KeyExchange {
                     stream.write_all(&(encrypted_key.len() as u16).to_be_bytes())?;
                     /* send key */
                     stream.write_all(&encrypted_key)?;
-
-                    /* generate and send iv to server */
-                    let encrypted_iv = {
-                        let mut rng = rand::thread_rng();
-                        pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
-                    };
-                    stream.write_all(&(encrypted_iv.len() as u16).to_be_bytes())?;
-                    stream.write_all(&encrypted_iv)?;
                 }
             }
             EncryptionType::AES256CBC => {
                 self.gen_aes256cbc_key();
 
-                if let Key::AES256CBC((key, iv)) = self.key {
+                if let Key::AES256CBC(key) = self.key {
                     let mut rng = rand::thread_rng();
                     let encrypted_key = pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &key).unwrap();
 
@@ -97,20 +97,12 @@ impl KeyExchange {
                     stream.write_all(&(encrypted_key.len() as u16).to_be_bytes())?;
                     /* send key */
                     stream.write_all(&encrypted_key)?;
-
-                    /* generate and send iv to server */
-                    let encrypted_iv = {
-                        let mut rng = rand::thread_rng();
-                        pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
-                    };
-                    stream.write_all(&(encrypted_iv.len() as u16).to_be_bytes())?;
-                    stream.write_all(&encrypted_iv)?;
                 }
             }
             EncryptionType::ChaCha20 => {
                 self.gen_chacha20_key();
 
-                if let Key::ChaCha20((key, iv)) = self.key {
+                if let Key::ChaCha20(key) = self.key {
                     let mut rng = rand::thread_rng();
                     let encrypted_key = pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &key).unwrap();
 
@@ -118,14 +110,6 @@ impl KeyExchange {
                     stream.write_all(&(encrypted_key.len() as u16).to_be_bytes())?;
                     /* send key */
                     stream.write_all(&encrypted_key)?;
-
-                    /* generate and send iv to server */
-                    let encrypted_iv = {
-                        let mut rng = rand::thread_rng();
-                        pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &iv).unwrap()
-                    };
-                    stream.write_all(&(encrypted_iv.len() as u16).to_be_bytes())?;
-                    stream.write_all(&encrypted_iv)?;
                 }
             }
         }
@@ -160,22 +144,7 @@ impl KeyExchange {
                         .unwrap()
                         .try_into()
                         .unwrap();
-                    let iv = {
-                        /* receive iv size */
-                        let iv_size = {
-                            let mut size = [0; 2];
-                            stream.read_exact(&mut size)?;
-                            u16::from_be_bytes(size)
-                        };
-                        let mut iv_buf = vec![0; iv_size as usize];
-                        stream.read_exact(&mut iv_buf)?;
-                        priv_key
-                            .decrypt(rsa::Pkcs1v15Encrypt, &iv_buf)
-                            .unwrap()
-                            .try_into()
-                            .unwrap()
-                    };
-                    Key::AES128CBC((key, iv))
+                    Key::AES128CBC(key)
                 }
                 EncryptionType::AES256CBC => {
                     let key = priv_key
@@ -183,22 +152,7 @@ impl KeyExchange {
                         .unwrap()
                         .try_into()
                         .unwrap();
-                    let iv = {
-                        /* receive iv size */
-                        let iv_size = {
-                            let mut size = [0; 2];
-                            stream.read_exact(&mut size)?;
-                            u16::from_be_bytes(size)
-                        };
-                        let mut iv_buf = vec![0; iv_size as usize];
-                        stream.read_exact(&mut iv_buf)?;
-                        priv_key
-                            .decrypt(rsa::Pkcs1v15Encrypt, &iv_buf)
-                            .unwrap()
-                            .try_into()
-                            .unwrap()
-                    };
-                    Key::AES256CBC((key, iv))
+                    Key::AES256CBC(key)
                 }
                 EncryptionType::ChaCha20 => {
                     let key = priv_key
@@ -206,22 +160,7 @@ impl KeyExchange {
                         .unwrap()
                         .try_into()
                         .unwrap();
-                    let nonce = {
-                        /* receive iv size */
-                        let nonce_size = {
-                            let mut size = [0; 2];
-                            stream.read_exact(&mut size)?;
-                            u16::from_be_bytes(size)
-                        };
-                        let mut nonce_buf = vec![0; nonce_size as usize];
-                        stream.read_exact(&mut nonce_buf)?;
-                        priv_key
-                            .decrypt(rsa::Pkcs1v15Encrypt, &nonce_buf)
-                            .unwrap()
-                            .try_into()
-                            .unwrap()
-                    };
-                    Key::ChaCha20((key, nonce))
+                    Key::ChaCha20(key)
                 }
             }
         };
@@ -232,9 +171,7 @@ impl KeyExchange {
             let mut rng = rand::thread_rng();
             let mut key = [0; 16];
             rng.fill_bytes(&mut key);
-            let mut iv = [0; IV_SIZE];
-            rng.fill_bytes(&mut iv);
-            Key::AES128CBC((key, iv))
+            Key::AES128CBC(key)
         };
     }
     fn gen_aes256cbc_key(&mut self) {
@@ -242,9 +179,7 @@ impl KeyExchange {
             let mut rng = rand::thread_rng();
             let mut key = [0; 32];
             rng.fill_bytes(&mut key);
-            let mut iv = [0; IV_SIZE];
-            rng.fill_bytes(&mut iv);
-            Key::AES256CBC((key, iv))
+            Key::AES256CBC(key)
         };
     }
     fn gen_chacha20_key(&mut self) {
@@ -254,7 +189,7 @@ impl KeyExchange {
             rng.fill_bytes(&mut key);
             let mut iv = [0; CHACHA20_NONCE_SIZE];
             rng.fill_bytes(&mut iv);
-            Key::ChaCha20((key, iv))
+            Key::ChaCha20(key)
         };
     }
 }
