@@ -60,20 +60,22 @@ The structure of client hello datapack is as follow:
 
 == Key exchange
 
-The server sends its RSA-3072 public key to the client, the client then encrypt its random key(we call it _seed_) with the server's public key, and sends back to the server. Thus, the server and the client exchanged their key safely. The seed can be of any size, long size of seed performs more safely than short one.
+When the server received the client hello message, it generate an RSA-3072 key pair, and send it to the client. Then the client select a cipher, generate a private key, and send it back to the server via the following structure.
+
+#table(
+    columns: (auto, auto, auto),
+    [Session ID], [Encryption Type], [RSA Encrypted Key],
+    [8 bytes], [1 byte], [Variable]
+)
 
 *Supported algorithms*
 
 #table(
     columns: (auto, auto),
     [*Value*], [*Algorithm*],
-    [1], [AES-128-CBC],
-    [2], [AES-256-CBC],
-    [3], [ChaCha20]
-)
-
-#table(
-    columns: (auto, auto, auto),
-    [Session ID], [Encryption Type], [RSA Encrypted Key],
-    [8 bytes], [1 byte], [Variable]
+    [1], [AES-128-GCM],
+    [2], [AES-256-GCM],
+    [3], [ChaCha20Poly1305],
+    [4], [AES-256-CCM],
+    [5], [AES-256-CCM]
 )

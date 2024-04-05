@@ -5,10 +5,8 @@ use crate::handshaking::*;
 use crate::method::*;
 
 use rand::RngCore;
-use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
-use rsa::*;
-use std::io::{Result as IOResult, ErrorKind, Error};
-use std::io::{Read, Write, BufReader};
+use std::io::{BufReader, Read, Write};
+use std::io::{Error, ErrorKind, Result as IOResult};
 use std::net::*;
 
 impl Write for STClient {
@@ -33,15 +31,13 @@ impl Read for STClient {
             }
         }
 
-        let size = self.datapack.payload.len();
+        let read_size = std::cmp::min(self.datapack.payload.len(), buf.len());
+        buf[..read_size].copy_from_slice(&self.datapack.payload[..read_size]);
 
-        let mut i = 0;
-        while i < buf.len() && !self.datapack.payload.is_empty() {
-            buf[i] = *self.datapack.payload.first().unwrap();
+        for _ in 0..read_size {
             self.datapack.payload.remove(0);
-            i += 1;
         }
-        Ok(size)
+        Ok(read_size)
     }
 }
 
@@ -73,20 +69,10 @@ impl STClient {
         let client_hello = ClientHello::default();
         client_hello.send(&mut stream)?;
 
-        /* receive RSA public key from server */
-        /* receive RSA pubkey size */
-        let size = {
-            let mut size = [0; 2];
-            stream.read_exact(&mut size[..])?;
-            u16::from_be_bytes(size)
-        };
-        /* receive RSA pubkey */
-        let mut buf = vec![0; size as usize];
-        stream.read_exact(&mut buf[..])?;
-        let pub_key = RsaPublicKey::from_public_key_der(&buf).unwrap();
+        let server_hello = ServerHello::receive(&mut stream)?;
 
         let mut key_exchanger = KeyExchange::new(encryption_type);
-        key_exchanger.send(&mut stream, &pub_key)?;
+        key_exchanger.send(&mut stream, &server_hello.pub_key)?;
 
         let conn = STClient {
             host: host.to_string(),
@@ -111,8 +97,7 @@ impl STClient {
 
         match self.datapack.encoding {
             ZSTD => {
-                self.datapack
-                    .payload = zstd::encode_all(&self.datapack.payload[..], 3)?.to_vec();
+                self.datapack.payload = zstd::encode_all(&self.datapack.payload[..], 3)?.to_vec();
             }
             GZIP => {
                 let mut encoder =
@@ -122,44 +107,59 @@ impl STClient {
             }
             LZMA2 => {
                 let mut compressed_data = Vec::new();
-                lzma_rs::lzma2_compress(&mut BufReader::new(&self.datapack.payload[..]), &mut compressed_data)?;
+                lzma_rs::lzma2_compress(
+                    &mut BufReader::new(&self.datapack.payload[..]),
+                    &mut compressed_data,
+                )?;
                 self.datapack.payload.extend(&compressed_data);
             }
             _ => {}
         }
 
         match self.encryption_type {
-            EncryptionType::AES128CBC => {
-                self.datapack.crypto = vec![0; IV_SIZE];
+            EncryptionType::AES128GCM => {
+                self.datapack.crypto = vec![0; AES_NONCE_SIZE];
                 rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
-                let iv: [u8; IV_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
-                if let Key::AES128CBC(key) = self.key {
-                    self.datapack.payload = aes128_cbc_encrypt(
-                        &self.datapack.payload,
-                        &key,
-                        &iv,
-                    );
+                let iv: [u8; AES_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES128GCM(key) = self.key {
+                    self.datapack.payload = aes128_gcm_encrypt(&self.datapack.payload, &key, &iv);
                 }
             }
-            EncryptionType::AES256CBC => {
-                self.datapack.crypto = vec![0; IV_SIZE];
+            EncryptionType::AES256GCM => {
+                self.datapack.crypto = vec![0; AES_NONCE_SIZE];
                 rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
-                let iv: [u8; IV_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
-                if let Key::AES256CBC(key) = self.key {
-                    self.datapack.payload = aes256_cbc_encrypt(
-                        &self.datapack.payload,
-                        &key,
-                        &iv,
-                    );
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES256GCM(key) = self.key {
+                    self.datapack.payload =
+                        aes256_gcm_encrypt(&self.datapack.payload, &key, &nonce);
                 }
             }
-            EncryptionType::ChaCha20 => {
+            EncryptionType::ChaCha20Poly1305 => {
                 self.datapack.crypto = vec![0; CHACHA20_NONCE_SIZE];
                 rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
-                let nonce: [u8; CHACHA20_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                let nonce: [u8; CHACHA20_NONCE_SIZE] =
+                    self.datapack.crypto.clone().try_into().unwrap();
                 if let Key::ChaCha20(key) = self.key {
-                    self.datapack
-                        .payload = chacah20_encrypt(key, nonce, &self.datapack.payload);
+                    self.datapack.payload =
+                        chacah20poly1305_encrypt(key, nonce, &self.datapack.payload);
+                }
+            }
+            EncryptionType::AES128CCM => {
+                self.datapack.crypto = vec![0; AES_NONCE_SIZE];
+                rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES128CCM(key) = self.key {
+                    self.datapack.payload =
+                        aes128_ccm_encrypt(&self.datapack.payload, &key, &nonce);
+                }
+            }
+            EncryptionType::AES256CCM => {
+                self.datapack.crypto = vec![0; AES_NONCE_SIZE];
+                rand::thread_rng().fill_bytes(&mut self.datapack.crypto);
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.crypto.clone().try_into().unwrap();
+                if let Key::AES256CCM(key) = self.key {
+                    self.datapack.payload =
+                        aes256_ccm_encrypt(&self.datapack.payload, &key, &nonce);
                 }
             }
         }
@@ -214,34 +214,49 @@ impl STClient {
         }
 
         match self.encryption_type {
-            EncryptionType::AES128CBC => {
-                let iv: [u8; IV_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
-                if let Key::AES128CBC(key) = self.key {
-                    self.datapack
-                        .payload = aes128_cbc_decrypt(&self.datapack.payload, &key, &iv);
+            EncryptionType::AES128GCM => {
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+                if let Key::AES128GCM(key) = self.key {
+                    self.datapack.payload =
+                        aes128_gcm_decrypt(&self.datapack.payload, &key, &nonce);
                 }
             }
-            EncryptionType::AES256CBC => {
-                if let Key::AES256CBC(key) = self.key {
-                    let iv: [u8; IV_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
-                    self.datapack
-                        .payload = aes256_cbc_decrypt(&self.datapack.payload, &key, &iv);
+            EncryptionType::AES256GCM => {
+                if let Key::AES256GCM(key) = self.key {
+                    let nonce: [u8; AES_NONCE_SIZE] =
+                        self.datapack.clone().crypto.try_into().unwrap();
+                    self.datapack.payload =
+                        aes256_gcm_decrypt(&self.datapack.payload, &key, &nonce);
                 }
             }
-            EncryptionType::ChaCha20 => {
-                let nonce: [u8; CHACHA20_NONCE_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+            EncryptionType::ChaCha20Poly1305 => {
+                let nonce: [u8; CHACHA20_NONCE_SIZE] =
+                    self.datapack.clone().crypto.try_into().unwrap();
                 if let Key::ChaCha20(key) = self.key {
-                    self.datapack.payload = chacah20_decrypt(key, nonce, &self.datapack.payload);
+                    self.datapack.payload =
+                        chacah20poly1305_decrypt(key, nonce, &self.datapack.payload);
+                }
+            }
+            EncryptionType::AES128CCM => {
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+                if let Key::AES128CCM(key) = self.key {
+                    self.datapack.payload =
+                        aes128_ccm_decrypt(&self.datapack.payload, &key, &nonce);
+                }
+            }
+            EncryptionType::AES256CCM => {
+                let nonce: [u8; AES_NONCE_SIZE] = self.datapack.clone().crypto.try_into().unwrap();
+                if let Key::AES256CCM(key) = self.key {
+                    self.datapack.payload =
+                        aes256_ccm_decrypt(&self.datapack.payload, &key, &nonce);
                 }
             }
         }
 
         match self.datapack.encoding {
             ZSTD => {
-                let payload = self.datapack
-                .payload.clone();
-                self.datapack
-                    .payload = zstd::decode_all(&payload[..])?;
+                let payload = self.datapack.payload.clone();
+                self.datapack.payload = zstd::decode_all(&payload[..])?;
             }
             GZIP => {
                 let mut decoder = flate2::read::GzDecoder::new(&self.datapack.payload[..]);
@@ -251,8 +266,11 @@ impl STClient {
             }
             LZMA2 => {
                 let mut decompressed_data = Vec::new();
-                lzma_rs::lzma2_decompress(&mut BufReader::new(&self.datapack.payload[..]), &mut decompressed_data)
-                    .unwrap();
+                lzma_rs::lzma2_decompress(
+                    &mut BufReader::new(&self.datapack.payload[..]),
+                    &mut decompressed_data,
+                )
+                .unwrap();
                 self.datapack.payload = decompressed_data;
             }
             _ => {}
@@ -303,18 +321,12 @@ impl STServer {
             return Err(Error::from(ErrorKind::Other));
         }
 
-        let mut rng = rand::thread_rng();
-        let priv_key = RsaPrivateKey::new(&mut rng, RSA_BITS).unwrap();
-        let pub_key = priv_key.to_public_key();
-        let binding = pub_key.to_public_key_der().unwrap();
-        let pub_key_der = binding.as_bytes();
-        /* send RSA public key */
-        stream.write_all(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
-        stream.write_all(pub_key_der)?; //send RSA pubkey
+        let mut seever_hello = ServerHello::new_server();
+        seever_hello.send(&mut stream)?;
 
         let mut key_exchanger = KeyExchange::default();
 
-        key_exchanger.receive(&mut stream, &priv_key)?;
+        key_exchanger.receive(&mut stream, &seever_hello.priv_key.unwrap())?;
 
         let client = STClient {
             host,
