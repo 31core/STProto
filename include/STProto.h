@@ -13,6 +13,8 @@
 #define ENCRYPRION_AES128GCM 1
 #define ENCRYPRION_AES256GCM 2
 #define ENCRYPRION_CHACHA20 3
+#define ENCRYPRION_AES128CCM 4
+#define ENCRYPRION_AES256CCM 5
 
 typedef void * STServer;
 typedef void * STClient;

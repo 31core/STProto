@@ -51,16 +51,27 @@ impl ClientHello {
     }
 }
 
+/**
+ * # Data structure
+ *
+ * |Start|End|Description|
+ * |-----|---|-----------|
+ * |0    |8  |Session ID |
+ * |8    |10 |Payload size|
+ * |1o   |   |Payload|
+*/
 pub struct ServerHello {
+    session_id: u64,
     pub priv_key: Option<RsaPrivateKey>,
     pub pub_key: RsaPublicKey,
 }
 
 impl ServerHello {
-    pub fn new_server() -> Self {
+    pub fn new_server(session_id: u64) -> Self {
         let mut rng = rand::thread_rng();
         let priv_key = RsaPrivateKey::new(&mut rng, RSA_BITS).unwrap();
         Self {
+            session_id,
             pub_key: priv_key.to_public_key(),
             priv_key: Some(priv_key),
         }
@@ -69,6 +80,8 @@ impl ServerHello {
         let binding = self.pub_key.to_public_key_der().unwrap();
         let pub_key_der = binding.as_bytes();
         /* send RSA public key */
+
+        stream.write_all(&self.session_id.to_be_bytes())?;
         stream.write_all(&(pub_key_der.len() as u16).to_be_bytes())?; //send RSA pubkey size
         stream.write_all(pub_key_der)?; //send RSA pubkey
 
@@ -76,6 +89,9 @@ impl ServerHello {
     }
     /* receive RSA public key from server */
     pub fn receive(stream: &mut TcpStream) -> std::io::Result<Self> {
+        let mut session_id = [0; 8];
+        stream.read_exact(&mut session_id)?;
+
         /* receive RSA pubkey size */
         let size = {
             let mut size = [0; 2];
@@ -87,6 +103,7 @@ impl ServerHello {
         stream.read_exact(&mut buf[..])?;
 
         Ok(Self {
+            session_id: u64::from_be_bytes(session_id),
             priv_key: None,
             pub_key: RsaPublicKey::from_public_key_der(&buf).unwrap(),
         })
@@ -96,23 +113,26 @@ impl ServerHello {
 pub struct KeyExchange {
     pub encryption: EncryptionType,
     pub key: Key,
+    pub session_id: u64,
 }
 
 impl Default for KeyExchange {
     fn default() -> Self {
-        Self::new(EncryptionType::AES256GCM)
+        Self::new(EncryptionType::AES256GCM, 0)
     }
 }
 
 impl KeyExchange {
-    pub fn new(encryption: EncryptionType) -> Self {
+    pub fn new(encryption: EncryptionType, session_id: u64) -> Self {
         Self {
             encryption,
             key: Key::AES256GCM([0; 32]),
+            session_id,
         }
     }
     /** send key to server */
     pub fn send(&mut self, stream: &mut TcpStream, pub_key: &RsaPublicKey) -> std::io::Result<()> {
+        stream.write_all(&self.session_id.to_be_bytes())?;
         stream.write_all(&[self.encryption.dump_as_byte()])?;
 
         match self.encryption {
@@ -190,6 +210,9 @@ impl KeyExchange {
         stream: &mut TcpStream,
         priv_key: &RsaPrivateKey,
     ) -> std::io::Result<()> {
+        let mut session_id = [0; 8];
+        stream.read_exact(&mut session_id)?;
+
         /* receive encryption argorithm */
         self.encryption = {
             let mut encryption = [0];

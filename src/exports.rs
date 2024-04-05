@@ -1,18 +1,20 @@
 use crate::connection::*;
 use crate::crypto::EncryptionType;
+use std::alloc::{alloc, Layout};
 use std::ffi::*;
-use std::io::*;
+use std::io::{Read, Write};
+use std::ptr::write as write_ptr;
 
 #[no_mangle]
 pub extern "C" fn STProto_bind(host: *const c_char, port: c_short) -> *mut u8 {
     let server =
         unsafe { STServer::bind(CStr::from_ptr(host).to_str().unwrap(), port as u16).unwrap() };
 
-    let layout = std::alloc::Layout::new::<STServer>();
+    let layout = Layout::new::<STServer>();
 
     unsafe {
-        let addr = std::alloc::alloc(layout);
-        std::ptr::write(addr as *mut STServer, server);
+        let addr = alloc(layout);
+        write_ptr(addr as *mut STServer, server);
         addr
     }
 }
@@ -49,23 +51,23 @@ pub extern "C" fn STProto_connect(
         .unwrap()
     };
 
-    let layout = std::alloc::Layout::new::<STClient>();
+    let layout = Layout::new::<STClient>();
 
     unsafe {
-        let addr = std::alloc::alloc(layout);
-        std::ptr::write(addr as *mut STClient, client);
+        let addr = alloc(layout);
+        write_ptr(addr as *mut STClient, client);
         addr
     }
 }
 
 #[no_mangle]
 pub extern "C" fn STProto_read(client: *mut u8, size: *mut c_int) -> *mut u8 {
+    let mut data = Vec::new();
     unsafe {
         let client = &mut *(client as *mut STClient);
-        let mut data = Vec::new();
         client.read_to_end(&mut data).unwrap();
-        let layout = std::alloc::Layout::for_value(&data);
-        let addr = std::alloc::alloc(layout);
+        let layout = Layout::for_value(&data);
+        let addr = alloc(layout);
         for (i, byte) in data.iter().enumerate() {
             *addr.add(i) = *byte;
         }
@@ -77,9 +79,9 @@ pub extern "C" fn STProto_read(client: *mut u8, size: *mut c_int) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn STProto_write(client: *mut u8, raw_data: *const u8, size: c_uint) {
+    let mut data = Vec::new();
     unsafe {
         let client = &mut *(client as *mut STClient);
-        let mut data = Vec::new();
         for i in 0..size {
             data.push(*raw_data.add(i as usize));
         }

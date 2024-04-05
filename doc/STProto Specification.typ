@@ -52,21 +52,35 @@ The first step of the STProto handshake is the client hello message, the client 
 
 The structure of client hello datapack is as follow:
 
-#table(
+#figure(
+table(
     columns: (auto, auto, auto, auto),
     [Protocol version], [Major version], [Minor version], [Session ID],
     [1 byte], [1 byte], [1 byte], [8 bytes],
-)
+), caption: [Datapack for Client hello])
+
+== Server hello
+
+When the server received the client hello message, it generate an RSA-3072 key pair, and return it to the client by sending a server hello message.
+
+#figure(
+table(
+    columns: (auto, auto, auto),
+    [Session ID], [Payload size], [Payload],
+    [8 bytes], [2 bytes], [Variable]
+), caption: [Datapack for Server hello])
+
 
 == Key exchange
 
-When the server received the client hello message, it generate an RSA-3072 key pair, and send it to the client. Then the client select a cipher, generate a private key, and send it back to the server via the following structure.
+Then the client select a cipher, generate a private key, and send it back to the server via the following structure.
 
-#table(
-    columns: (auto, auto, auto),
-    [Session ID], [Encryption Type], [RSA Encrypted Key],
-    [8 bytes], [1 byte], [Variable]
-)
+#figure(
+table(
+    columns: (auto, auto, auto, auto),
+    [Session ID], [Encryption Type], [Encrypted key size], [RSA encrypted key],
+    [8 bytes], [1 byte], [2 byes], [Variable]
+), caption: [Datapack for key exchange])
 
 *Supported algorithms*
 

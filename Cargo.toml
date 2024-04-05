@@ -3,17 +3,19 @@ name = "stproto"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["31core"]
+authors = ["31core 31core@tutanota.com"]
 
 [dependencies]
-rust-crypto = "0.2.36"
-rand = "0.8.5"
-rsa = "0.8.1"
-zstd = "0.12.4"
+aes = "0.8.4"
+aes-gcm = "0.10.3"
+ccm = "0.5.0"
+chacha20poly1305 = "0.10.1"
 flate2 = "1.0.26"
 lzma-rs = "0.3.0"
-aes-gcm = "0.10.3"
-chacha20poly1305 = "0.10.1"
+rand = "0.8.5"
+rsa = "0.8.1"
+rust-crypto = "0.2.36"
+zstd = "0.12.4"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

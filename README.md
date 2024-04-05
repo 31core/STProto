@@ -1,17 +1,32 @@
 # STProto
+
 ## Introduction
+
 STProto (Secure Transport Protocol) is an End-to-End Encryption network protocol. Like OpenSSL, it's a Session Layer Protocol, it focuses on secure transport bitween server and client, and provides a universal API which is similar to socket.
 
 ## Language bindings
+
 |Language|Interface     |
 |--------|--------------|
 |Rust    |Native        |
 |C       |Shared Library|
 
+## Supported ciphers
+
+STProto supports these symmatric ciphers.
+
+* AES-128-GCM
+* AES-256-GCM
+* ChaCha20-Poly1305
+* AES-128-CCM
+* AES-256-CCM
+
 ## Get start
-With STProto, you can write a simple `server` and `client` like this.
+
+With STProto, you can write a simple **server** and **client** like this.
 
 `server.rs`:
+
 ```rust
 use std::io::*;
 use stproto::connection::*;
@@ -28,6 +43,7 @@ fn main() -> std::io::Result<()> {
 ```
 
 `client.rs`:
+
 ```rust
 use std::io::*;
 use stproto::connection::*;
@@ -40,10 +56,12 @@ fn main() -> std::io::Result<()> {
 ```
 
 If it runs properly, you will get:
+
 ```shell
 $ ./server
 [116, 101, 115, 116]
 ```
 
 ## Bugs & Reports
+
 You can report a bug through email `31core@tutanota.com`.

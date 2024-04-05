@@ -42,6 +42,7 @@ impl Read for STClient {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct STClient {
     host: String,
     port: u16,
@@ -71,7 +72,7 @@ impl STClient {
 
         let server_hello = ServerHello::receive(&mut stream)?;
 
-        let mut key_exchanger = KeyExchange::new(encryption_type);
+        let mut key_exchanger = KeyExchange::new(encryption_type, client_hello.session_id);
         key_exchanger.send(&mut stream, &server_hello.pub_key)?;
 
         let conn = STClient {
@@ -321,7 +322,7 @@ impl STServer {
             return Err(Error::from(ErrorKind::Other));
         }
 
-        let mut seever_hello = ServerHello::new_server();
+        let mut seever_hello = ServerHello::new_server(client_hello.session_id);
         seever_hello.send(&mut stream)?;
 
         let mut key_exchanger = KeyExchange::default();
